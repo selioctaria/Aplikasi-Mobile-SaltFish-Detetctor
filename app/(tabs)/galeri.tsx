@@ -1,168 +1,883 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
-    Image,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Image,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 
-import * as ImagePicker from 'expo-image-picker';
-
-import { LinearGradient } from 'expo-linear-gradient';
-
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ImagePicker from 'expo-image-picker';
+import { LinearGradient } from 'expo-linear-gradient';
+import { router } from 'expo-router';
+
+// GANTI IP INI SESUAI IP BACKEND FLASK DI LAPTOP
+// Contoh dari terminal Flask kamu: http://192.168.43.110:5000
+const API_URL = 'http://192.168.43.110:5000/predict';
+
+type DetectionResult = {
+  kelas: string;
+  fitur: {
+    edge_pixel: number;
+    edge_ratio: number;
+    contrast: number;
+    correlation: number;
+    energy: number;
+    homogeneity: number;
+  };
+  gambar: {
+    original?: string;
+    remove_bg?: string;
+    resized?: string;
+    grayscale?: string;
+    clahe?: string;
+    canny?: string;
+  };
+};
 
 export default function GaleriScreen() {
-
   const [image, setImage] = useState<string | null>(null);
+  const [imageName, setImageName] = useState<string>('Belum ada citra');
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [stepText, setStepText] = useState('Menunggu citra');
+  const [result, setResult] = useState<DetectionResult | null>(null);
 
-  // PILIH GAMBAR
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(30)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 900,
+        useNativeDriver: true,
+      }),
+
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 850,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, []);
+
+  const base64Image = (base64?: string) => {
+    if (!base64) return '';
+    return `data:image/jpeg;base64,${base64}`;
+  };
+
+  const getResultColor = (kelas?: string) => {
+    if (!kelas) return '#60A5FA';
+
+    const lower = kelas.toLowerCase();
+
+    if (lower.includes('rendah')) return '#10B981';
+    if (lower.includes('sedang')) return '#F59E0B';
+    if (lower.includes('tinggi')) return '#EF4444';
+
+    return '#60A5FA';
+  };
+
+  const getResultIcon = (kelas?: string) => {
+    if (!kelas) return 'information';
+
+    const lower = kelas.toLowerCase();
+
+    if (lower.includes('rendah')) return 'check-circle';
+    if (lower.includes('sedang')) return 'alert-circle';
+    if (lower.includes('tinggi')) return 'alert';
+
+    return 'information';
+  };
+
   const pickImage = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
-    const result =
-      await ImagePicker.launchImageLibraryAsync({
+    if (!permission.granted) {
+      Alert.alert(
+        'Izin Galeri Diperlukan',
+        'Aplikasi membutuhkan izin untuk memilih citra ikan dari galeri.'
+      );
+      return;
+    }
 
-        mediaTypes:
-          ImagePicker.MediaTypeOptions.Images,
+    const resultPicker = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 1,
+    });
 
-        allowsEditing: true,
+    if (!resultPicker.canceled) {
+      const selectedImage = resultPicker.assets[0];
 
-        quality: 1,
+      setImage(selectedImage.uri);
+      setImageName(selectedImage.fileName || 'Citra ikan terpilih');
+      setResult(null);
+      setProgress(0);
+      setStepText('Citra berhasil dipilih');
+    }
+  };
+
+  const resetImage = () => {
+    setImage(null);
+    setImageName('Belum ada citra');
+    setResult(null);
+    setProgress(0);
+    setStepText('Menunggu citra');
+  };
+
+  const saveToHistory = async (data: DetectionResult, source: 'Kamera' | 'Galeri') => {
+  try {
+    const newItem = {
+      id: Date.now().toString(),
+      image: data.gambar.original
+        ? `data:image/jpeg;base64,${data.gambar.original}`
+        : image,
+      result: `Garam ${data.kelas}`,
+      source,
+      date: new Date().toLocaleDateString('id-ID'),
+      edge_pixel: String(data.fitur.edge_pixel),
+      edge_ratio: String(data.fitur.edge_ratio),
+      contrast: String(data.fitur.contrast),
+      correlation: String(data.fitur.correlation),
+      energy: String(data.fitur.energy),
+      homogeneity: String(data.fitur.homogeneity),
+    };
+
+    const oldData = await AsyncStorage.getItem('history_data');
+    const parsedData = oldData ? JSON.parse(oldData) : [];
+
+    const updatedData = [newItem, ...parsedData];
+
+    await AsyncStorage.setItem('history_data', JSON.stringify(updatedData));
+  } catch (error) {
+    console.log('Gagal menyimpan riwayat:', error);
+  }
+};
+
+  const handleDetect = async () => {
+    if (!image) {
+      Alert.alert(
+        'Citra Belum Dipilih',
+        'Silakan pilih gambar ikan terlebih dahulu.'
+      );
+      return;
+    }
+
+    let progressInterval: ReturnType<typeof setInterval> | null = null;
+
+    try {
+      setLoading(true);
+      setResult(null);
+      setProgress(0);
+      setStepText('Menganalisis Citra');
+
+      let currentProgress = 0;
+
+      progressInterval = setInterval(() => {
+        currentProgress += 5;
+
+        if (currentProgress <= 20) {
+          setStepText('Remove Background...');
+        } else if (currentProgress <= 35) {
+          setStepText('Resize citra 256x256...');
+        } else if (currentProgress <= 50) {
+          setStepText('Konversi Grayscale...');
+        } else if (currentProgress <= 65) {
+          setStepText('Peningkatan kontras CLAHE...');
+        } else if (currentProgress <= 80) {
+          setStepText('Canny Edge Detection...');
+        } else if (currentProgress <= 95) {
+          setStepText('Ekstraksi GLCM dan klasifikasi SVM...');
+        }
+
+        if (currentProgress < 95) {
+          setProgress(currentProgress);
+        }
+      }, 180);
+
+      const fileName = image.split('/').pop() || 'ikan_benggol.jpg';
+
+      const fileType = fileName.toLowerCase().endsWith('.png')
+        ? 'image/png'
+        : 'image/jpeg';
+
+      const formData = new FormData();
+
+      formData.append('image', {
+        uri: image,
+        name: fileName,
+        type: fileType,
+      } as any);
+
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        body: formData,
       });
 
-    if (!result.canceled) {
-      setImage(result.assets[0].uri);
+      const data = await response.json();
+
+      if (!response.ok || data.status !== 'success') {
+        throw new Error(data.message || 'Gagal melakukan deteksi citra.');
+      }
+
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
+
+      setProgress(100);
+      setStepText('Deteksi selesai');
+
+      setResult({
+        kelas: data.kelas,
+        fitur: {
+          edge_pixel: data.fitur.edge_pixel,
+          edge_ratio: data.fitur.edge_ratio,
+          contrast: data.fitur.contrast,
+          correlation: data.fitur.correlation,
+          energy: data.fitur.energy,
+          homogeneity: data.fitur.homogeneity,
+        },
+        gambar: {
+          original: data.gambar.original,
+          remove_bg: data.gambar.remove_bg,
+          resized: data.gambar.resized,
+          grayscale: data.gambar.grayscale,
+          clahe: data.gambar.clahe,
+          canny: data.gambar.canny,
+        },
+      });
+
+      await saveToHistory(data, 'Galeri');
+      
+    } catch (error: any) {
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
+
+      console.log('ERROR DETEKSI:', error);
+
+      Alert.alert(
+        'Gagal Deteksi',
+        error?.message ||
+          'Terjadi kesalahan saat menghubungkan aplikasi ke backend.'
+      );
+
+      setStepText('Deteksi gagal');
+      setProgress(0);
+    } finally {
+      setTimeout(() => {
+        setLoading(false);
+      }, 500);
     }
   };
 
   return (
-
     <LinearGradient
-      colors={['#050816', '#0B1023', '#111827']}
+      colors={['#020617', '#0F172A', '#111827']}
       style={styles.container}
     >
+      <View style={styles.glowTop} />
+      <View style={styles.glowBottom} />
 
-      {/* TITLE */}
-      <Text style={styles.title}>
-        Pilih Gambar
-      </Text>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+      >
+        <Animated.View
+          style={[
+            styles.content,
+            {
+              opacity: fadeAnim,
+              transform: [{ translateY: slideAnim }],
+            },
+          ]}
+        >
+          {/* HEADER */}
+          <View style={styles.header}>
+            <TouchableOpacity
+              style={styles.backButton}
+              onPress={() => router.back()}
+            >
+              <MaterialCommunityIcons
+                name="arrow-left"
+                size={24}
+                color="#FFFFFF"
+              />
+            </TouchableOpacity>
 
-      <Text style={styles.subtitle}>
-        Upload gambar ikan dari galeri
-      </Text>
+            <View style={styles.headerTextBox}>
+              <Text style={styles.title}>Analisis Galeri</Text>
 
-      {/* IMAGE PREVIEW */}
-      <View style={styles.previewContainer}>
-
-        {image ? (
-
-          <Image
-            source={{ uri: image }}
-            style={styles.image}
-          />
-
-        ) : (
-
-          <View style={styles.placeholder}>
-
-            <MaterialCommunityIcons
-              name="image-outline"
-              size={90}
-              color="#6B7280"
-            />
-
-            <Text style={styles.placeholderText}>
-              Belum ada gambar dipilih
-            </Text>
-
+              <Text style={styles.subtitle}>
+                Pilih citra ikan Benggol dari galeri untuk dianalisis menggunakan backend Flask.
+              </Text>
+            </View>
           </View>
 
-        )}
+          {/* METHOD CARD */}
+          <View style={styles.methodCard}>
+            <View style={styles.methodHeader}>
+              <MaterialCommunityIcons
+                name="chart-timeline-variant"
+                size={21}
+                color="#60A5FA"
+              />
 
-      </View>
+              <Text style={styles.methodTitle}>Alur Metode</Text>
+            </View>
 
-      {/* BUTTON */}
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onPress={pickImage}
-      >
+            <View style={styles.methodFlow}>
 
-        <LinearGradient
-          colors={['#2563EB', '#7C3AED']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={styles.button}
-        >
+              <Text style={styles.methodBadge}>Canny Edge</Text>
 
-          <MaterialCommunityIcons
-            name="image"
-            size={24}
-            color="#FFFFFF"
-          />
+              <MaterialCommunityIcons
+                name="chevron-right"
+                size={18}
+                color="#94A3B8"
+              />
 
-          <Text style={styles.buttonText}>
-            Pilih dari Galeri
-          </Text>
+              <Text style={styles.methodBadge}>GLCM</Text>
 
-        </LinearGradient>
+              <MaterialCommunityIcons
+                name="chevron-right"
+                size={18}
+                color="#94A3B8"
+              />
 
-      </TouchableOpacity>
+              <Text style={styles.methodBadge}>SVM</Text>
+            </View>
+          </View>
 
+          {/* PREVIEW INPUT */}
+          <View style={styles.previewContainer}>
+            {image ? (
+              <>
+                <Image
+                  source={{ uri: image }}
+                  style={styles.image}
+                />
+
+                <View style={styles.imageOverlay}>
+                  <MaterialCommunityIcons
+                    name="check-circle"
+                    size={18}
+                    color="#10B981"
+                  />
+
+                  <Text style={styles.imageOverlayText}>
+                    Citra siap dianalisis
+                  </Text>
+                </View>
+              </>
+            ) : (
+              <View style={styles.placeholder}>
+                <View style={styles.placeholderIcon}>
+                  <MaterialCommunityIcons
+                    name="image-search-outline"
+                    size={75}
+                    color="#60A5FA"
+                  />
+                </View>
+
+                <Text style={styles.placeholderTitle}>
+                  Belum ada citra dipilih
+                </Text>
+
+                <Text style={styles.placeholderText}>
+                  Pilih gambar ikan dari galeri dengan format JPG atau PNG.
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {/* FILE INFO */}
+          <View style={styles.fileInfoCard}>
+            <MaterialCommunityIcons
+              name={image ? 'image-check' : 'image-outline'}
+              size={22}
+              color={image ? '#10B981' : '#94A3B8'}
+            />
+
+            <View style={styles.fileInfoTextBox}>
+              <Text style={styles.fileInfoLabel}>Status Citra</Text>
+
+              <Text style={styles.fileInfoValue} numberOfLines={1}>
+                {imageName}
+              </Text>
+            </View>
+          </View>
+
+          {/* LOADING */}
+          {loading && (
+            <View style={styles.progressWrapper}>
+              <View style={styles.progressHeader}>
+                <ActivityIndicator size="small" color="#60A5FA" />
+
+                <Text style={styles.progressTitle}>
+                  Menganalisis Citra
+                </Text>
+              </View>
+
+              <Text style={styles.stepText}>
+                {stepText}
+              </Text>
+
+              <View style={styles.progressBarBg}>
+                <View
+                  style={[
+                    styles.progressBarFill,
+                    { width: `${progress}%` },
+                  ]}
+                />
+              </View>
+
+              <Text style={styles.progressPercent}>
+                {progress}%
+              </Text>
+            </View>
+          )}
+
+          {/* RESULT */}
+          {result && !loading && (
+            <>
+              <View
+                style={[
+                  styles.resultCard,
+                  { borderColor: `${getResultColor(result.kelas)}55` },
+                ]}
+              >
+                <View style={styles.resultHeader}>
+                  <MaterialCommunityIcons
+                    name={getResultIcon(result.kelas) as any}
+                    size={28}
+                    color={getResultColor(result.kelas)}
+                  />
+
+                  <Text style={styles.resultTitle}>
+                    Hasil Deteksi Kandungan Garam
+                  </Text>
+                </View>
+
+                <View
+                  style={[
+                    styles.resultMainBox,
+                    { backgroundColor: `${getResultColor(result.kelas)}22` },
+                  ]}
+                >
+                  <Text style={styles.resultCategory}>
+                    Garam {result.kelas}
+                  </Text>
+                </View>
+
+                <Text style={styles.featureTitle}>
+                  Nilai Fitur Hasil Ekstraksi
+                </Text>
+
+                <View style={styles.featureGrid}>
+                  <View style={styles.featureItem}>
+                    <Text style={styles.featureLabel}>Edge Pixel</Text>
+                    <Text style={styles.featureValue}>
+                      {result.fitur.edge_pixel}
+                    </Text>
+                  </View>
+
+                  <View style={styles.featureItem}>
+                    <Text style={styles.featureLabel}>Edge Ratio</Text>
+                    <Text style={styles.featureValue}>
+                      {result.fitur.edge_ratio}
+                    </Text>
+                  </View>
+
+                  <View style={styles.featureItem}>
+                    <Text style={styles.featureLabel}>Contrast</Text>
+                    <Text style={styles.featureValue}>
+                      {result.fitur.contrast}
+                    </Text>
+                  </View>
+
+                  <View style={styles.featureItem}>
+                    <Text style={styles.featureLabel}>Correlation</Text>
+                    <Text style={styles.featureValue}>
+                      {result.fitur.correlation}
+                    </Text>
+                  </View>
+
+                  <View style={styles.featureItem}>
+                    <Text style={styles.featureLabel}>Energy</Text>
+                    <Text style={styles.featureValue}>
+                      {result.fitur.energy}
+                    </Text>
+                  </View>
+
+                  <View style={styles.featureItem}>
+                    <Text style={styles.featureLabel}>Homogeneity</Text>
+                    <Text style={styles.featureValue}>
+                      {result.fitur.homogeneity}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* PREPROCESS IMAGE RESULT */}
+              <View style={styles.processImageCard}>
+                <View style={styles.processImageHeader}>
+                  <MaterialCommunityIcons
+                    name="image-filter-center-focus"
+                    size={24}
+                    color="#38BDF8"
+                  />
+
+                  <Text style={styles.processImageTitle}>
+                    Hasil Praproses Citra
+                  </Text>
+                </View>
+
+                <Text style={styles.processImageNote}>
+                  Background hasil remove background menggunakan warna hitam sesuai proses backend.
+                </Text>
+
+                <View style={styles.processImageGrid}>
+                  {result.gambar.remove_bg && (
+                    <View style={styles.processImageItem}>
+                      <Image
+                        source={{ uri: base64Image(result.gambar.remove_bg) }}
+                        style={styles.processImage}
+                        resizeMode="cover"
+                      />
+
+                      <Text style={styles.processImageLabel}>
+                        Remove BG
+                      </Text>
+                    </View>
+                  )}
+
+                  {result.gambar.resized && (
+                    <View style={styles.processImageItem}>
+                      <Image
+                        source={{ uri: base64Image(result.gambar.resized) }}
+                        style={styles.processImage}
+                        resizeMode="cover"
+                      />
+
+                      <Text style={styles.processImageLabel}>
+                        Resize 256x256
+                      </Text>
+                    </View>
+                  )}
+
+                  {result.gambar.grayscale && (
+                    <View style={styles.processImageItem}>
+                      <Image
+                        source={{ uri: base64Image(result.gambar.grayscale) }}
+                        style={styles.processImage}
+                        resizeMode="cover"
+                      />
+
+                      <Text style={styles.processImageLabel}>
+                        Grayscale
+                      </Text>
+                    </View>
+                  )}
+
+                  {result.gambar.clahe && (
+                    <View style={styles.processImageItem}>
+                      <Image
+                        source={{ uri: base64Image(result.gambar.clahe) }}
+                        style={styles.processImage}
+                        resizeMode="cover"
+                      />
+
+                      <Text style={styles.processImageLabel}>
+                        CLAHE
+                      </Text>
+                    </View>
+                  )}
+
+                  {result.gambar.canny && (
+                    <View style={styles.processImageItem}>
+                      <Image
+                        source={{ uri: base64Image(result.gambar.canny) }}
+                        style={styles.processImage}
+                        resizeMode="cover"
+                      />
+
+                      <Text style={styles.processImageLabel}>
+                        Canny
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            </>
+          )}
+
+          {/* BUTTON AREA */}
+          <View style={styles.buttonArea}>
+            {!image && !loading && (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={pickImage}
+              >
+                <LinearGradient
+                  colors={['#2563EB', '#7C3AED']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.mainButton}
+                >
+                  <MaterialCommunityIcons
+                    name="image-plus"
+                    size={24}
+                    color="#FFFFFF"
+                  />
+
+                  <Text style={styles.buttonText}>
+                    Pilih dari Galeri
+                  </Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            )}
+
+            {image && !loading && !result && (
+              <View style={styles.actionRow}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  style={styles.secondaryButton}
+                  onPress={pickImage}
+                >
+                  <MaterialCommunityIcons
+                    name="image-edit"
+                    size={22}
+                    color="#FFFFFF"
+                  />
+
+                  <Text style={styles.actionText}>
+                    Ganti
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  style={styles.detectButton}
+                  onPress={handleDetect}
+                >
+                  <MaterialCommunityIcons
+                    name="radar"
+                    size={22}
+                    color="#FFFFFF"
+                  />
+
+                  <Text style={styles.actionText}>
+                    Deteksi
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {result && !loading && (
+              <View style={styles.actionRow}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  style={styles.secondaryButton}
+                  onPress={resetImage}
+                >
+                  <MaterialCommunityIcons
+                    name="refresh"
+                    size={22}
+                    color="#FFFFFF"
+                  />
+
+                  <Text style={styles.actionText}>
+                    Ulangi
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  style={styles.detectButton}
+                  onPress={handleDetect}
+                >
+                  <MaterialCommunityIcons
+                    name="reload"
+                    size={22}
+                    color="#FFFFFF"
+                  />
+
+                  <Text style={styles.actionText}>
+                    Deteksi Lagi
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </Animated.View>
+      </ScrollView>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-
   container: {
     flex: 1,
-    backgroundColor: '#050816',
-    paddingTop: 80,
-    paddingHorizontal: 25,
+    paddingTop: 62,
+    paddingHorizontal: 22,
+    backgroundColor: '#020617',
+  },
+
+  scrollContent: {
+    paddingBottom: 44,
+  },
+
+  content: {
+    flexGrow: 1,
+  },
+
+  glowTop: {
+    position: 'absolute',
+    top: -120,
+    right: -100,
+    width: 300,
+    height: 300,
+    backgroundColor: '#2563EB',
+    borderRadius: 200,
+    opacity: 0.18,
+  },
+
+  glowBottom: {
+    position: 'absolute',
+    bottom: -130,
+    left: -100,
+    width: 300,
+    height: 300,
+    backgroundColor: '#7C3AED',
+    borderRadius: 200,
+    opacity: 0.18,
+  },
+
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+
+  backButton: {
+    width: 46,
+    height: 46,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+
+  headerTextBox: {
+    flex: 1,
   },
 
   title: {
-    fontSize: 34,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
 
   subtitle: {
-    fontSize: 16,
-    color: '#B0B0B0',
-    marginTop: 10,
-    marginBottom: 40,
+    fontSize: 13.5,
+    color: '#CBD5E1',
+    lineHeight: 20,
+    marginTop: 5,
+  },
+
+  methodCard: {
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.09)',
+  },
+
+  methodHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+
+  methodTitle: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: 'bold',
+    marginLeft: 8,
+  },
+
+  methodFlow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+
+  methodBadge: {
+    color: '#BFDBFE',
+    fontSize: 12,
+    fontWeight: '700',
+    backgroundColor: 'rgba(96, 165, 250, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(96, 165, 250, 0.22)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 50,
   },
 
   previewContainer: {
     width: '100%',
-    height: 400,
-
+    height: 310,
     backgroundColor: 'rgba(255,255,255,0.06)',
-
-    borderRadius: 30,
-
+    borderRadius: 28,
     justifyContent: 'center',
     alignItems: 'center',
-
     overflow: 'hidden',
-
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-
-    marginBottom: 40,
+    borderColor: 'rgba(255,255,255,0.1)',
+    marginBottom: 14,
   },
 
   placeholder: {
     alignItems: 'center',
+    paddingHorizontal: 25,
+  },
+
+  placeholderIcon: {
+    width: 120,
+    height: 120,
+    borderRadius: 35,
+    backgroundColor: 'rgba(96, 165, 250, 0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+
+  placeholderTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 8,
   },
 
   placeholderText: {
     color: '#9CA3AF',
-    fontSize: 16,
-    marginTop: 15,
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 20,
   },
 
   image: {
@@ -170,22 +885,287 @@ const styles = StyleSheet.create({
     height: '100%',
   },
 
-  button: {
-    height: 65,
+  imageOverlay: {
+    position: 'absolute',
+    bottom: 14,
+    left: 14,
+    right: 14,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    borderRadius: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
 
+  imageOverlayText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+
+  fileInfoCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+
+  fileInfoTextBox: {
+    marginLeft: 12,
+    flex: 1,
+  },
+
+  fileInfoLabel: {
+    color: '#94A3B8',
+    fontSize: 12,
+  },
+
+  fileInfoValue: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: 3,
+  },
+
+  progressWrapper: {
+    backgroundColor: 'rgba(255,255,255,0.07)',
     borderRadius: 22,
+    padding: 17,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
 
+  progressHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+
+  progressTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginLeft: 10,
+  },
+
+  stepText: {
+    color: '#CBD5E1',
+    fontSize: 13,
+    marginBottom: 12,
+    lineHeight: 20,
+  },
+
+  progressBarBg: {
+    height: 12,
+    width: '100%',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#10B981',
+    borderRadius: 20,
+  },
+
+  progressPercent: {
+    color: '#94A3B8',
+    fontSize: 12,
+    textAlign: 'right',
+    marginTop: 8,
+  },
+
+  resultCard: {
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 24,
+    padding: 18,
+    marginBottom: 16,
+    borderWidth: 1,
+  },
+
+  resultHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+
+  resultTitle: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: 'bold',
+    marginLeft: 10,
+    flex: 1,
+  },
+
+  resultMainBox: {
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 15,
+  },
+
+  resultCategory: {
+    color: '#FFFFFF',
+    fontSize: 23,
+    fontWeight: 'bold',
+  },
+
+  resultSub: {
+    color: '#E5E7EB',
+    fontSize: 13,
+    marginTop: 5,
+  },
+
+  featureTitle: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: 'bold',
+    marginBottom: 10,
+  },
+
+  featureGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+
+  featureItem: {
+    width: '47%',
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    borderRadius: 15,
+    padding: 12,
+  },
+
+  featureLabel: {
+    color: '#94A3B8',
+    fontSize: 11,
+  },
+
+  featureValue: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: 'bold',
+    marginTop: 4,
+  },
+
+  processImageCard: {
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 24,
+    padding: 18,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.25)',
+  },
+
+  processImageHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+
+  processImageTitle: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: 'bold',
+    marginLeft: 10,
+  },
+
+  processImageNote: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    lineHeight: 19,
+    marginBottom: 14,
+  },
+
+  processImageGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+
+  processImageItem: {
+    width: '47%',
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    borderRadius: 18,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+
+  processImage: {
+    width: '100%',
+    height: 125,
+    borderRadius: 14,
+    backgroundColor: '#000000',
+  },
+
+  processImageLabel: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+
+  buttonArea: {
+    marginTop: 10,
+    paddingBottom: 32,
+  },
+
+  mainButton: {
+    height: 62,
+    borderRadius: 22,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-
-    gap: 12,
+    gap: 10,
   },
 
   buttonText: {
     color: '#FFFFFF',
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: 'bold',
   },
 
+  actionRow: {
+    flexDirection: 'row',
+    gap: 13,
+  },
+
+  secondaryButton: {
+    flex: 1,
+    height: 60,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.13)',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+  },
+
+  detectButton: {
+    flex: 1,
+    height: 60,
+    borderRadius: 20,
+    backgroundColor: '#10B981',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+  },
+
+  actionText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: 'bold',
+  },
 });
