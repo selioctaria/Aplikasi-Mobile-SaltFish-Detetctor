@@ -1,9 +1,9 @@
 import {
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 
 import { LinearGradient } from 'expo-linear-gradient';
@@ -80,7 +80,7 @@ const tips: TipItem[] = [
   {
     title: 'Gunakan Latar Sederhana',
     description:
-      'Latar belakang yang tidak ramai dapat membantu proses analisis citra menjadi lebih baik.',
+      'Untuk hasil deteksi yang optimal, gunakan latar belakang polos, sebaiknya hitam, agar objek ikan Benggol terlihat jelas dan proses analisis citra menjadi lebih akurat.',
     icon: 'crop-free',
     color: '#10B981',
   },
@@ -268,7 +268,7 @@ export default function PanduanScreen() {
               color="#94A3B8"
             />
 
-            <Text style={styles.methodBadge}>Canny Edge</Text>
+            <Text style={styles.methodBadge}>Canny Edge Detection</Text>
 
             <MaterialCommunityIcons
               name="chevron-right"
@@ -309,9 +309,9 @@ export default function PanduanScreen() {
 
           <View style={styles.resultItem}>
             <MaterialCommunityIcons
-              name="check-circle"
-              size={22}
-              color="#10B981"
+              name="alert-circle"
+                size={26}
+                color="#F59E0B"
             />
 
             <View style={styles.resultTextBox}>
@@ -328,9 +328,9 @@ export default function PanduanScreen() {
 
           <View style={styles.resultItem}>
             <MaterialCommunityIcons
-              name="alert-circle"
+              name="check-circle"
               size={22}
-              color="#F59E0B"
+              color="#10B981"
             />
 
             <View style={styles.resultTextBox}>

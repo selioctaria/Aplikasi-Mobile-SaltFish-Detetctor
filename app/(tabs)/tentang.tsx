@@ -318,9 +318,9 @@ export default function TentangScreen() {
           <View style={styles.outputContainer}>
             <View style={styles.outputCard}>
               <MaterialCommunityIcons
-                name="check-circle"
+                name="alert-circle"
                 size={26}
-                color="#10B981"
+                color="#F59E0B"
               />
 
               <Text style={styles.outputTitle}>
@@ -334,9 +334,9 @@ export default function TentangScreen() {
 
             <View style={styles.outputCard}>
               <MaterialCommunityIcons
-                name="alert-circle"
+                name="check-circle"
                 size={26}
-                color="#F59E0B"
+                color="#10B981"
               />
 
               <Text style={styles.outputTitle}>

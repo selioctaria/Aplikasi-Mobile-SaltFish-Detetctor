@@ -9,13 +9,10 @@ import {
   View,
 } from 'react-native';
 
-import { StatusBar } from 'expo-status-bar';
-
-import { LinearGradient } from 'expo-linear-gradient';
-
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-
+import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 
 const { width } = Dimensions.get('window');
 

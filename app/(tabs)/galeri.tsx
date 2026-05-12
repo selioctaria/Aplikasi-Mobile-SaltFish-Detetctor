@@ -91,8 +91,8 @@ export default function GaleriScreen() {
 
     const lower = kelas.toLowerCase();
 
-    if (lower.includes('rendah')) return 'check-circle';
-    if (lower.includes('sedang')) return 'alert-circle';
+    if (lower.includes('rendah')) return 'alert-circle ';
+    if (lower.includes('sedang')) return 'check-circle';
     if (lower.includes('tinggi')) return 'alert';
 
     return 'information';
